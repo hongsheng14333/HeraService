@@ -121,42 +121,6 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     }
 
 
-    /*
-    public List<DataDef.SmsAssignItem> getTargetPhoneNumberList(int count,
-            List<DataDef.SmsAssignItem> simList) {
-        Log.d(TAG, ">>>current simlist max = " + simList.size());
-        if (simList == null || simList.isEmpty() || count <= 0) {
-            return new ArrayList<>();
-        }
-        if (count > simList.size()) {
-            return new ArrayList<>(simList);
-        }
-
-        List<DataDef.SmsAssignItem> result = new ArrayList<>();
-        int remaining = simList.size() - currentIndex;
-
-        if (remaining >= count) {
-            // 剩余元素足够，直接取
-            for (int i = 0; i < count; i++) {
-                result.add(simList.get(currentIndex + i));
-            }
-            currentIndex += count;
-        } else {
-            // 剩余元素不够，先取剩余部分
-            for (int i = 0; i < remaining; i++) {
-                result.add(simList.get(currentIndex + i));
-            }
-
-            // 再从开头补足剩余数量
-            int needed = count - remaining;
-            for (int i = 0; i < needed; i++) {
-                result.add(simList.get(i));
-            }
-            currentIndex = needed; // 更新索引到补足结束的位置
-        }
-        return result;
-    }*/
-
     @Override
     public void onTaskPush(DataDef.SmsTaskPushData data) {
         currentIndex = 0;
@@ -272,8 +236,11 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     /**
      * 获取心跳数据
      */
-    public DataDef.HeartbeatData getHeartbeatData(DataDef.SimStatus[] sims) {
+    public DataDef.HeartbeatData getHeartbeatData(DataDef.SimStatus[] sims, boolean isScaning) {
         DataDef.HeartbeatData heartbeat = new DataDef.HeartbeatData();
+
+        Log.d(TAG, ">>>getHeartbeatData sims = " + sims.toString());
+
         // SIM卡状态
         heartbeat.sims = Arrays.asList(sims);
         simcarData = sims;
@@ -284,6 +251,7 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
         heartbeat.device.charging = mBatteryHelper.isCharging();
         heartbeat.device.temperature = mBatteryHelper.getTemperature();
         heartbeat.device.networkType = mNetworkHelper.getNetworkType();
+        heartbeat.device.scanning = isScaning;
         return heartbeat;
     }
 }

@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.core.heraservice.BackgroundTaskService;
 import com.core.heraservice.network.DataDef;
+import com.core.heraservice.sms.SmsSendManager;
 import com.core.heraservice.utils.GlobalToast;
 import com.google.gson.Gson;
 
@@ -173,12 +174,19 @@ public class WebSocketManager {
     /**
      * 启动心跳循环
      */
-    public void startHeartbeatLoop(int intervalSeconds, DataDef.HeartbeatData heartbeat) {
+    public void startHeartbeatLoop(int intervalSeconds, SmsSendManager sendManager) {
+        if (heartbeatExecutor != null && !heartbeatExecutor.isShutdown()) {
+            return;
+        }
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+
         heartbeatExecutor.scheduleAtFixedRate(() -> {
             if (isConnected) {
                 try {
-                    sendHeartbeat(heartbeat);
+                    if (sendManager != null && mBackgroundTaskService != null) {
+                        sendHeartbeat(sendManager.getHeartbeatData(mBackgroundTaskService.getmSimCardData(),
+                                        mBackgroundTaskService.getDeviceScaningStatus()));
+                    }
                 } catch (Exception e) {
                     if (listener != null) {
                         listener.onError(e);
@@ -251,6 +259,19 @@ public class WebSocketManager {
                             smsSendListener.onTaskPush(pushData);
                         }
                     }
+                    break;
+                case "SIM_SCAN":
+                    DataDef.SimScanData scanData = gson.fromJson(msg.data, DataDef.SimScanData.class);
+                    if (scanData != null) {
+                        if (mBackgroundTaskService.getDeviceScaningStatus()) {
+                            Log.d(TAG, "device is scaning simcard skip...");
+                        } else {
+                            Log.d(TAG, "start simcard scaning intervalSeconds = " + scanData.intervalSeconds);
+                            mBackgroundTaskService.doSimcardScan(scanData.intervalSeconds);
+                        }
+                    }
+
+                    break;
                 case "ping":
                     break;
                 default:

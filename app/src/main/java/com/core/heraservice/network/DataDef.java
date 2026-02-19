@@ -41,6 +41,7 @@ public class DataDef {
         public boolean charging;
         public double temperature;
         public String networkType;
+        public boolean scanning;
     }
 
     // 短信发送指令
@@ -213,6 +214,12 @@ public class DataDef {
         public int priority;
         public int totalCount;
         public List<String> availableForSims;
+    }
+
+    public class SimScanData {
+        public String  scanId;
+        boolean scanAll;
+        public int intervalSeconds;
     }
 
     /**

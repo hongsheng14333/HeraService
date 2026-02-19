@@ -21,6 +21,7 @@ import android.os.IBinder;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
@@ -75,7 +76,7 @@ public class BackgroundTaskService extends Service {
     private static final int MAIN_SIMCARD = 0;
     private static int currentSelectSlotID = 0;
     private static final int MAX_RETRY_COUNT = 12;
-    private static final int MAX_UUSD_RETRY_COUNT = 3;
+    private static final int MAX_UUSD_RETRY_COUNT = 5;
     private boolean mSimCardReady = false;
     private String mCurrentSimSerailNum = "";
     private String mMainSimcardSerialNo = "";
@@ -84,6 +85,7 @@ public class BackgroundTaskService extends Service {
     private GlobalToast mGlobalToast;
     private boolean isOverlayVisible = false;
 
+    private static volatile boolean isSimScaning = false;
     public GlobalToast getmGlobalToast() {
         return mGlobalToast;
     }
@@ -205,6 +207,8 @@ public class BackgroundTaskService extends Service {
 
                     webSocketManager.setOnSmsSendListener(mSmsManager);
                     webSocketManager.connect();
+
+                    doSimcardScan(2);
                 } else {
                     Log.d(TAG, "设备注册失败,请检查设备网络");
                 }
@@ -230,7 +234,6 @@ public class BackgroundTaskService extends Service {
             // 获取到 AIDL 接口实例
             mStkService = IStkCallInterface.Stub.asInterface(service);
             Log.d(TAG, "Connected to STK!");
-            doSimcardScan();
         }
 
         @Override
@@ -239,20 +242,33 @@ public class BackgroundTaskService extends Service {
         }
     };
 
-    void doSimcardScan() {
+    public void doSimcardScan(int intervalSeconds) {
         mSimcardScanHandler.post(new Runnable() {
             @Override
             public void run() {
                 int i = 0;
-                mContext.registerReceiver(simStateReceiver, filter);
+
+                isSimScaning = true;
+
+                // 切回主卡
                 Intent intent = new Intent(CommonConstant.SWITCH_SIMCARD_ACTION);
+                intent.putExtra("sim_id", 0);
+                mContext.sendBroadcast(intent);
+                try {
+                    Thread.sleep(2000 + intervalSeconds * 1000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+
+                // 开始扫卡
+                mContext.registerReceiver(simStateReceiver, filter);
                 for (i = 0; i < CommonConstant.MAX_SIM_SLOT; i++) {
                     int count = 0;
 
                     mSimStatus[i] = new DataDef.SimStatus();
 
                     try {
-                        Thread.sleep(2000);
+                        Thread.sleep(3000);
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }
@@ -268,7 +284,7 @@ public class BackgroundTaskService extends Service {
                     while (count <= MAX_RETRY_COUNT) {
                         if (mSimCardReady) {
                             try {
-                                Thread.sleep(2000);
+                                Thread.sleep(2000 + intervalSeconds * 1000);
                             } catch (InterruptedException e) {
                                 throw new RuntimeException(e);
                             }
@@ -285,37 +301,44 @@ public class BackgroundTaskService extends Service {
                     if (count > MAX_RETRY_COUNT) {
                         Log.d(TAG, "switch sim slot timeout, simslot not change slotid: " + i);
                         mSimStatus[i].operator = mSimCardHelper.getOperatorName();
-                        if ((mSimCardHelper.getPhoneNumber()).length() > 1) {
+                        if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
                             Log.d(TAG, "telephony get phonenumber success！");
-                            mSimStatus[i].cardNumber = mSimCardHelper.getPhoneNumber();
+                            setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
                         } else {
                             Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
-                            mSimStatus[i].cardNumber = getPhoneNumber();
+                            setSimStatusCardNumber(i, getPhoneNumber());
                         }
-                        mSimStatus[i].slot = i + 1 + "";
-                        mSimStatus[i].status = 1;
+                        setSimStatusSlot(i, i + 1 + "");
+                        setSimStatusStatus(i, 1);
                     } else {
-                        if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo()))) {
+                        if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo())) && (i != 0)) {
                             Log.d(TAG, "switch simcard fail slotid: " + i + " not insert simcard");
-                            mSimStatus[i].operator = "NO SIM";
-                            mSimStatus[i].cardNumber = "NO SIM";
-                            mSimStatus[i].slot = i + 1 + "";
-                            mSimStatus[i].status = 0;
+                            setSimStatusOperator(i, "NO SIM");
+                            setSimStatusCardNumber(i, "NO SIM");
+                            setSimStatusSlot(i, i + 1 + "");
+                            setSimStatusStatus(i, 0);
                         } else {
                             Log.d(TAG, "switch simcard success slotid: " + i);
-                            mSimStatus[i].operator = mSimCardHelper.getOperatorName();
-                            mSimStatus[i].cardNumber = mSimCardHelper.getPhoneNumber();
-                            if ((mSimCardHelper.getPhoneNumber()).length() > 1) {
+                            setSimStatusOperator(i, mSimCardHelper.getOperatorName());
+
+                            if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
                                 Log.d(TAG, "telephony get phonenumber success！");
-                                mSimStatus[i].cardNumber = mSimCardHelper.getPhoneNumber();
+                                setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
+                                setSimStatusStatus(i, 1);
                             } else {
                                 Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
-                                mSimStatus[i].cardNumber = getPhoneNumber();
+                                String numberByUSSD = "";
+                                numberByUSSD = getPhoneNumber();
+                                if (numberByUSSD.length() > 1) {
+                                    setSimStatusStatus(i, 1);
+                                } else {
+                                    setSimStatusStatus(i, 0);
+                                }
+                                setSimStatusCardNumber(i, numberByUSSD);
                             }
-
-                            mSimStatus[i].slot = i + 1 + "";
-                            mSimStatus[i].status = 1;
-                            Log.d(TAG, "add slot id = " + mSimStatus[i].slot + " operator = " + mSimStatus[i].operator + " number = " + mSimStatus[i].cardNumber);
+                            setSimStatusSlot(i, i + 1 + "");
+                            Log.d(TAG, "add slot id = " + mSimStatus[i].slot + " operator = " + mSimStatus[i].operator + " number = " + mSimStatus[i].cardNumber +
+                                    " status = " + mSimStatus[i].status);
                         }
                     }
                     if (i == 0) {
@@ -323,6 +346,7 @@ public class BackgroundTaskService extends Service {
                     }
                 }
                 mContext.unregisterReceiver(simStateReceiver);
+                isSimScaning = false;
             }
         });
     }
@@ -341,6 +365,11 @@ public class BackgroundTaskService extends Service {
                 break;
             }
             count++;
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
             Log.d(TAG, "sendUssdRequest fail retry count = " + count);
         }
         if (count >= MAX_UUSD_RETRY_COUNT) {
@@ -349,8 +378,29 @@ public class BackgroundTaskService extends Service {
         return number;
     }
 
-    public DataDef.SimStatus[] getmSimCardData() {
+    public synchronized boolean getDeviceScaningStatus() {
+        return isSimScaning;
+    }
+
+    public synchronized DataDef.SimStatus[] getmSimCardData() {
         return mSimStatus;
+    }
+
+
+    public synchronized void setSimStatusOperator(int i, String operator) {
+        mSimStatus[i].operator = operator;
+    }
+
+    public synchronized void setSimStatusSlot(int i, String slot) {
+        mSimStatus[i].slot = slot;
+    }
+
+    public synchronized void setSimStatusStatus(int i, int status) {
+        mSimStatus[i].status = status;
+    }
+
+    public synchronized void setSimStatusCardNumber(int i, String cardNumber) {
+        mSimStatus[i].cardNumber = cardNumber;
     }
 
     private void bindToStk() {
@@ -417,7 +467,7 @@ public class BackgroundTaskService extends Service {
             public void onConnected() {
                 Log.d(TAG, "initWebSocket onConnected>>>");
                 //启动心跳循环
-                webSocketManager.startHeartbeatLoop(30, mSmsManager.getHeartbeatData(mSimStatus));
+                webSocketManager.startHeartbeatLoop(30, mSmsManager);
             }
             @Override
             public void onDisconnected(int code, String reason) {
@@ -438,15 +488,17 @@ public class BackgroundTaskService extends Service {
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT, // 改为MATCH_PARENT
+                WindowManager.LayoutParams.MATCH_PARENT, // WindowManager.LayoutParams.MATCH_PARENT
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
                         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
                         WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
-                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH |
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT
         );
+
+        //  WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+        //  WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH |
+        // WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
 
         EditText etUsername = overlayView.findViewById(R.id.et_username);
         EditText etCardKey = overlayView.findViewById(R.id.et_card_key);
@@ -508,6 +560,18 @@ public class BackgroundTaskService extends Service {
 
         windowManager.addView(overlayView, params);
         isOverlayVisible = true;
+
+        overlayView.setFocusableInTouchMode(true);
+        overlayView.setOnKeyListener(new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                Log.d(TAG, "overlayView keycode = " + keyCode);
+                if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
+                    hideInputDialog();
+                }
+                return false;
+            }
+        });
     }
 
     public void hideInputDialog() {
