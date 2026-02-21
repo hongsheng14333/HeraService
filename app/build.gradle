@@ -52,6 +52,8 @@ android {
 
 dependencies {
     implementation files('libs/telephony-common.jar')
+    implementation files ('libs/nuisdk-release.aar')
+    implementation files('libs/fastjson-1.1.46.android.jar')
     implementation 'com.squareup.okhttp3:okhttp:4.11.0'
     implementation 'org.java-websocket:Java-WebSocket:1.5.3'
     implementation 'com.google.code.gson:gson:2.10.1'

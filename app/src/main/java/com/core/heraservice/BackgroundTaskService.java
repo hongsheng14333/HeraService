@@ -43,6 +43,7 @@ import com.core.heraservice.utils.DeviceRegister;
 import com.core.heraservice.utils.GlobalToast;
 import com.core.heraservice.utils.SystemOs;
 import com.core.heraservice.utils.SystemProperty;
+import com.core.heraservice.voice.SpeechRecognize;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -83,6 +84,7 @@ public class BackgroundTaskService extends Service {
     private View overlayView;
     private WindowManager windowManager;
     private GlobalToast mGlobalToast;
+    private SpeechRecognize mSpeechRecognize;
     private boolean isOverlayVisible = false;
 
     private static volatile boolean isSimScaning = false;
@@ -180,6 +182,11 @@ public class BackgroundTaskService extends Service {
             public void onAvailable(Network network) {
                 Log.d(TAG, "Network is available>>>");
                 initHttpRequest();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (mSpeechRecognize == null) {
+                        mSpeechRecognize = new SpeechRecognize(mContext);
+                    }
+                }
             }
 
             @Override
