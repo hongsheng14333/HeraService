@@ -108,7 +108,7 @@ public class BackgroundTaskService extends Service {
         public void onReceive(Context context, Intent intent) {
             if (ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
                 int state = mSimCardHelper.getSimState();
-                if (state == TelephonyManager.SIM_STATE_READY || state == TelephonyManager.SIM_STATE_LOADED) {
+                if (isSimStateReadyForScan(state)) {
                     Log.d(TAG, "simcard state change->ready state=" + state);
                     mSimCardReady = true;
                 } else {
@@ -452,11 +452,15 @@ public class BackgroundTaskService extends Service {
             return true;
         }
 
-        if (switchedSerialNo.isEmpty() && operatorName.isEmpty() && simState != TelephonyManager.SIM_STATE_READY && simState != TelephonyManager.SIM_STATE_LOADED) {
+        if (switchedSerialNo.isEmpty() && operatorName.isEmpty() && !isSimStateReadyForScan(simState)) {
             return true;
         }
 
         return false;
+    }
+
+    private boolean isSimStateReadyForScan(int simState) {
+        return simState == TelephonyManager.SIM_STATE_READY;
     }
 
     private void markSlotAsNoSim(int slotIndex) {
