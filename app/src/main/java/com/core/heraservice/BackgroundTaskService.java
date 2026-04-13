@@ -85,6 +85,8 @@ public class BackgroundTaskService extends Service {
     private static final int MAX_RETRY_COUNT = 12;
     private static final int MAX_UUSD_RETRY_COUNT = 50;
     private static final int MAX_UUSD_RETRY_COUNT_FOR_SINGAL_CHECK = 10;
+    private static final int SIM_SWITCH_SETTLE_DELAY_MS = 3000;
+    private static final int SIM_POLL_INTERVAL_MS = 500;
     private boolean mSimCardReady = false;
     private String mCurrentSimSerailNum = "";
     private String mMainSimcardSerialNo = "";
@@ -105,9 +107,11 @@ public class BackgroundTaskService extends Service {
         public void onReceive(Context context, Intent intent) {
             if (ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
                 int state = mSimCardHelper.getSimState();
-                if (state == TelephonyManager.SIM_STATE_READY) {
-                    Log.d(TAG, "simcard state change->ready>>>");
+                if (state == TelephonyManager.SIM_STATE_READY || state == TelephonyManager.SIM_STATE_LOADED) {
+                    Log.d(TAG, "simcard state change->ready state=" + state);
                     mSimCardReady = true;
+                } else {
+                    Log.d(TAG, "simcard state change state=" + state);
                 }
             }
         }
@@ -279,6 +283,7 @@ public class BackgroundTaskService extends Service {
                 long startTime, endTime;
 
                 isSimScaning = true;
+                Log.d(TAG, ">>> 扫卡开始 isSimScaning = true");
                 startTime = System.currentTimeMillis();
                 // 切回主卡
                 Intent intent = new Intent(CommonConstant.SWITCH_SIMCARD_ACTION);
@@ -293,103 +298,40 @@ public class BackgroundTaskService extends Service {
                 // 开始扫卡
                 mContext.registerReceiver(simStateReceiver, filter);
                 for (i = 0; i < CommonConstant.MAX_SIM_SLOT; i++) {
-                    int count = 0;
-
                     mSimStatus[i] = new DataDef.SimStatus();
                     mSimEmpty[i] = new DataDef.SimStatus();
 
                     try {
-                        Thread.sleep(3000);
+                        Thread.sleep(SIM_SWITCH_SETTLE_DELAY_MS);
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }
-                    mSimCardReady = false;
 
-                    // 获取当前SIM卡IMEI
-                    mCurrentSimSerailNum = mSimCardHelper.getSimSerialNo();
+                    // 获取切卡前的卡信息，后续用来判断是否真的切到了新卡
+                    mCurrentSimSerailNum = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
                     Log.d(TAG, "current simcard serialno = " + mCurrentSimSerailNum);
 
                     // 切换SIM卡
                     intent.putExtra("sim_id", i + "");
                     mContext.sendBroadcast(intent);
-                    while (count <= MAX_RETRY_COUNT) {
-                        if (mSimCardReady) {
-                            try {
-                                Thread.sleep(2000 + intervalSeconds * 1000);
-                            } catch (InterruptedException e) {
-                                throw new RuntimeException(e);
-                            }
-                            Log.d(TAG, "simcard ready new imei  = " + mSimCardHelper.getSimSerialNo());
-                            break;
-                        }
-                        try {
-                            Thread.sleep(500);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                        count++;
-                    }
-                    if (count > MAX_RETRY_COUNT) {
-                        Log.d(TAG, "switch sim slot timeout, simslot not change slotid: " + i);
-                        mSimStatus[i].operator = mSimCardHelper.getOperatorName();
-                        mSimEmpty[i].operator = mSimCardHelper.getOperatorName();
-                        if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
-                            Log.d(TAG, "telephony get phonenumber success！");
-                            setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
-                            mSimEmpty[i].cardNumber = "";
-                        } else {
-                            Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
-                            setSimStatusCardNumber(i, getPhoneNumber(mSimCardHelper.getOperatorName()));
-                            mSimEmpty[i].cardNumber = "";
-                        }
-                        setSimStatusSlot(i, i + 1 + "");
-                        mSimEmpty[i].slot = i + 1 + "";
-                        setSimStatusStatus(i, 1);
-                        mSimEmpty[i].status = 1;
+                    boolean switchReady = waitForSimSwitchReady(i, mCurrentSimSerailNum);
+                    String switchedSerialNo = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
+
+                    if (!switchReady) {
+                        Log.d(TAG, "switch sim slot timeout or not stable, slotid: " + i + " serial=" + switchedSerialNo);
+                        markSlotAsNoSim(i);
                     } else {
-                        if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo())) && (i != 0)) {
-                            Log.d(TAG, "switch simcard fail slotid: " + i + " not insert simcard");
-                            setSimStatusOperator(i, "NO SIM");
-                            mSimEmpty[i].operator = "NO SIM";
-                            setSimStatusCardNumber(i, "NO SIM");
-                            mSimEmpty[i].cardNumber = "";
-                            setSimStatusSlot(i, i + 1 + "");
-                            mSimEmpty[i].slot = 1 + "";
-                            setSimStatusStatus(i, 0);
-                            mSimEmpty[i].status = 0;
+                        Log.d(TAG, "switch simcard ready slotid: " + i + " serial=" + switchedSerialNo);
+                        if (isLikelyEmptySlot(i, switchedSerialNo)) {
+                            Log.d(TAG, "switch simcard judged empty slotid: " + i);
+                            markSlotAsNoSim(i);
                         } else {
                             Log.d(TAG, "switch simcard success slotid: " + i);
-                            setSimStatusOperator(i, mSimCardHelper.getOperatorName());
-                            mSimEmpty[i].operator = mSimCardHelper.getOperatorName();
-
-                            if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
-                                Log.d(TAG, "telephony get phonenumber success！");
-                                setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
-                                mSimEmpty[i].cardNumber = "";
-                                setSimStatusStatus(i, 1);
-                                mSimEmpty[i].status = 1;
-                            } else {
-                                Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
-                                String numberByUSSD = "";
-                                numberByUSSD = getPhoneNumber(mSimCardHelper.getOperatorName());
-                                if (numberByUSSD.length() > 1) {
-                                    setSimStatusStatus(i, 1);
-                                    mSimEmpty[i].status = 1;
-                                } else {
-                                    setSimStatusStatus(i, 0);
-                                    mSimEmpty[i].status = 0;
-                                }
-                                setSimStatusCardNumber(i, numberByUSSD);
-                                mSimEmpty[i].cardNumber = "";
-                            }
-                            setSimStatusSlot(i, i + 1 + "");
-                            mSimEmpty[i].slot = i + 1 + "";
-                            Log.d(TAG, "add slot id = " + mSimStatus[i].slot + " operator = " + mSimStatus[i].operator + " number = " + mSimStatus[i].cardNumber +
-                                    " status = " + mSimStatus[i].status);
+                            fillSlotInfo(i);
                         }
                     }
                     if (i == 0) {
-                        mMainSimcardSerialNo = mSimCardHelper.getSimSerialNo();
+                        mMainSimcardSerialNo = switchedSerialNo;
                     }
                 }
                 endTime = System.currentTimeMillis();
@@ -408,6 +350,7 @@ public class BackgroundTaskService extends Service {
                 }
                 mContext.unregisterReceiver(simStateReceiver);
                 isSimScaning = false;
+                Log.d(TAG, ">>> 扫卡结束 isSimScaning = false, 耗时=" + ((endTime - startTime) / 1000L) + "秒");
             }
         });
     }
@@ -418,56 +361,148 @@ public class BackgroundTaskService extends Service {
         mSimcardSwitchHandler.post(new Runnable() {
             @Override
             public void run() {
-                int i = 0;
-                int count = 0;
                 boolean status = false;
+                String currentSerialNo = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
 
                 Intent intent = new Intent(CommonConstant.SWITCH_SIMCARD_ACTION);
                 intent.putExtra("sim_id", (slotID - 1) + "");
                 mContext.sendBroadcast(intent);
                 try {
-                    Thread.sleep(3000);
+                    Thread.sleep(SIM_SWITCH_SETTLE_DELAY_MS);
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
 
                 // 开始切卡
                 mContext.registerReceiver(simStateReceiver, filter);
-
-                while (count <= MAX_RETRY_COUNT) {
-                    if (mSimCardReady) {
-                        try {
-                            Thread.sleep(3000);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
-                        Log.d(TAG, "switchSimSlot ready new imei  = " + mSimCardHelper.getSimSerialNo());
-                        break;
-                    }
-                    try {
-                        Thread.sleep(500);
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
-                    count++;
-                }
-
-                if (count > MAX_RETRY_COUNT) {
-                    Log.d(TAG, "switchSimSlot timeout, simslot not change slotid: " + slotID);
-                    status = true;
+                boolean switchReady = waitForSimSwitchReady(slotID - 1, currentSerialNo);
+                String switchedSerialNo = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
+                if (!switchReady) {
+                    Log.d(TAG, "switchSimSlot timeout, simslot not ready slotid: " + slotID);
+                    status = false;
+                } else if (isLikelyEmptySlot(slotID - 1, switchedSerialNo)) {
+                    Log.d(TAG, "switchSimSlot fail slotid: " + slotID + " not insert simcard");
+                    status = false;
                 } else {
-                    if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo())) && ((slotID - 1) != 0)) {
-                        Log.d(TAG, "switchSimSlot fail slotid: " + slotID + " not insert simcard");
-                        status = false;
-                    } else {
-                        Log.d(TAG, "switchSimSlot success slotid: " + slotID);
-                        status = true;
-                    }
+                    Log.d(TAG, "switchSimSlot success slotid: " + slotID + " serial=" + switchedSerialNo);
+                    status = true;
                 }
                 mSpeechRecognize.startReceiveCode(codeData, status);
                 mContext.unregisterReceiver(simStateReceiver);
             }
         });
+    }
+
+    private boolean waitForSimSwitchReady(int targetSlotIndex, String previousSerialNo) {
+        int count = 0;
+        String lastSerialNo = "";
+        mSimCardReady = false;
+
+        while (count <= MAX_RETRY_COUNT) {
+            String currentSerialNo = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
+            lastSerialNo = currentSerialNo;
+            boolean hasIccCard = mSimCardHelper.hasIccCard();
+            int simState = mSimCardHelper.getSimState();
+
+            if (hasIccCard && mSimCardReady && !currentSerialNo.isEmpty()) {
+                try {
+                    Thread.sleep(2000 + intervalSafeDelay(targetSlotIndex));
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                Log.d(TAG, "waitForSimSwitchReady success slot=" + targetSlotIndex + " state=" + simState + " serial=" + currentSerialNo);
+                return true;
+            }
+
+            if (!hasIccCard && count >= 2) {
+                Log.d(TAG, "waitForSimSwitchReady no icc card slot=" + targetSlotIndex + " state=" + simState + " serial=" + currentSerialNo);
+                return false;
+            }
+
+            if (!previousSerialNo.isEmpty() && previousSerialNo.equals(currentSerialNo) && !mSimCardReady && count >= MAX_RETRY_COUNT / 2) {
+                Log.d(TAG, "waitForSimSwitchReady serial unchanged slot=" + targetSlotIndex + " serial=" + currentSerialNo);
+            }
+
+            try {
+                Thread.sleep(SIM_POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            count++;
+        }
+
+        Log.d(TAG, "waitForSimSwitchReady timeout slot=" + targetSlotIndex + " serial=" + lastSerialNo);
+        return false;
+    }
+
+    private boolean isLikelyEmptySlot(int slotIndex, String switchedSerialNo) {
+        boolean hasIccCard = mSimCardHelper.hasIccCard();
+        int simState = mSimCardHelper.getSimState();
+        String operatorName = mSimCardHelper.getOperatorNameSafe();
+
+        if (!hasIccCard) {
+            return true;
+        }
+
+        if (slotIndex != MAIN_SIMCARD && !mMainSimcardSerialNo.isEmpty() && mMainSimcardSerialNo.equals(switchedSerialNo)) {
+            return true;
+        }
+
+        if (switchedSerialNo.isEmpty() && operatorName.isEmpty() && simState != TelephonyManager.SIM_STATE_READY && simState != TelephonyManager.SIM_STATE_LOADED) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void markSlotAsNoSim(int slotIndex) {
+        setSimStatusOperator(slotIndex, "NO SIM");
+        mSimEmpty[slotIndex].operator = "NO SIM";
+        setSimStatusCardNumber(slotIndex, "NO SIM");
+        mSimEmpty[slotIndex].cardNumber = "";
+        setSimStatusSlot(slotIndex, slotIndex + 1 + "");
+        mSimEmpty[slotIndex].slot = slotIndex + 1 + "";
+        setSimStatusStatus(slotIndex, 0);
+        mSimEmpty[slotIndex].status = 0;
+    }
+
+    private void fillSlotInfo(int slotIndex) {
+        String operatorName = mSimCardHelper.getOperatorNameSafe();
+        setSimStatusOperator(slotIndex, operatorName);
+        mSimEmpty[slotIndex].operator = operatorName;
+
+        String phoneNumber = mSimCardHelper.getPhoneNumber();
+        if (phoneNumber != null && phoneNumber.length() > 1) {
+            Log.d(TAG, "telephony get phonenumber success");
+            setSimStatusCardNumber(slotIndex, phoneNumber);
+            setSimStatusStatus(slotIndex, 1);
+            mSimEmpty[slotIndex].status = 1;
+        } else {
+            Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
+            String numberByUSSD = getPhoneNumber(operatorName);
+            if (numberByUSSD.length() > 1) {
+                setSimStatusStatus(slotIndex, 1);
+                mSimEmpty[slotIndex].status = 1;
+            } else {
+                setSimStatusStatus(slotIndex, 0);
+                mSimEmpty[slotIndex].status = 0;
+            }
+            setSimStatusCardNumber(slotIndex, numberByUSSD);
+        }
+
+        mSimEmpty[slotIndex].cardNumber = "";
+        setSimStatusSlot(slotIndex, slotIndex + 1 + "");
+        mSimEmpty[slotIndex].slot = slotIndex + 1 + "";
+        Log.d(TAG, "add slot id = " + mSimStatus[slotIndex].slot + " operator = " + mSimStatus[slotIndex].operator + " number = " + mSimStatus[slotIndex].cardNumber +
+                " status = " + mSimStatus[slotIndex].status);
+    }
+
+    private String normalizeSimSerialNo(String serialNo) {
+        return serialNo == null ? "" : serialNo.trim();
+    }
+
+    private int intervalSafeDelay(int targetSlotIndex) {
+        return 2000;
     }
 
 
