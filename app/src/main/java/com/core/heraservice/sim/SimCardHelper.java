@@ -36,6 +36,10 @@ public class SimCardHelper {
         return telephonyManager.getSimState() == TelephonyManager.SIM_STATE_READY;
     }
 
+    public boolean hasIccCard() {
+        return telephonyManager.hasIccCard();
+    }
+
     /**
      * 获取手机号码
      */
@@ -50,10 +54,29 @@ public class SimCardHelper {
     }
 
     public String getSimSerialNo() {
-        return telephonyManager.getSimSerialNumber();
+        try {
+            String serialNo = telephonyManager.getSimSerialNumber();
+            return serialNo != null ? serialNo.trim() : "";
+        } catch (SecurityException e) {
+            Log.e(TAG, "getSimSerialNo permission denied", e);
+            return "";
+        } catch (Exception e) {
+            Log.e(TAG, "getSimSerialNo failed", e);
+            return "";
+        }
     }
 
     public int getSimState() {
         return telephonyManager.getSimState();
+    }
+
+    public String getOperatorNameSafe() {
+        try {
+            String operatorName = telephonyManager.getSimOperatorName();
+            return operatorName != null ? operatorName.trim() : "";
+        } catch (Exception e) {
+            Log.e(TAG, "getOperatorNameSafe failed", e);
+            return "";
+        }
     }
 }

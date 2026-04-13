@@ -35,6 +35,7 @@ public class DataDef {
         public int signal;
         public String operator;
         public String cardNumber;
+        public String iccid;  // SIM卡序列号
     }
 
     public static class SimScanResultData {
@@ -51,6 +52,7 @@ public class DataDef {
         public double temperature;
         public String networkType;
         public boolean scanning;
+        public String currentSlot;  // 当前正在扫描的卡槽编号，如 "s6"，非扫描状态时为空字符串
     }
 
     // 短信发送指令

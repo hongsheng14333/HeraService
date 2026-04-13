@@ -200,9 +200,10 @@ public class WebSocketManager {
                 try {
                     if (sendManager != null && mBackgroundTaskService != null) {
                         boolean isScanning = mBackgroundTaskService.getDeviceScaningStatus();
-                        Log.d(TAG, ">>> 定时心跳发送, isScanning=" + isScanning);
+                        int currentScanSlot = mBackgroundTaskService.getCurrentScanSlot();
+                        Log.d(TAG, ">>> 定时心跳发送, isScanning=" + isScanning + ", currentScanSlot=" + currentScanSlot);
                         sendHeartbeat(sendManager.getHeartbeatData(mBackgroundTaskService.getmSimCardData(),
-                                        isScanning));
+                                        isScanning, currentScanSlot));
                     }
                 } catch (Exception e) {
                     if (listener != null) {
@@ -374,10 +375,10 @@ public class WebSocketManager {
                                 Log.d(TAG, "device is scaning simcard skip...");
                             } else {
                                 Log.d(TAG, "start simcard scaning intervalSeconds = " + scanData.intervalSeconds);
-                                // 立即发送一次心跳，携带 scanning=true
+                                // 立即发送一次心跳，携带 scanning=true, currentScanSlot=0
                                 sendHeartbeat(sendManager.getHeartbeatData(
-                                    mBackgroundTaskService.getmSimCardData(), true));
-                                Log.d(TAG, ">>> 已发送心跳 scanning=true");
+                                    mBackgroundTaskService.getmSimCardData(), true, 0));
+                                Log.d(TAG, ">>> 已发送心跳 scanning=true, currentScanSlot=0");
                                 mBackgroundTaskService.doSimcardScan(scanData.intervalSeconds, scanData.scanId);
                             }
                         }

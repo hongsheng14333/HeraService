@@ -97,6 +97,7 @@ public class BackgroundTaskService extends Service {
     private boolean isOverlayVisible = false;
 
     private static volatile boolean isSimScaning = false;
+    private static volatile int currentScanSlot = -1;  // 当前正在扫描的卡槽编号，-1表示非扫描状态
     public GlobalToast getmGlobalToast() {
         return mGlobalToast;
     }
@@ -283,6 +284,7 @@ public class BackgroundTaskService extends Service {
                 long startTime, endTime;
 
                 isSimScaning = true;
+                currentScanSlot = 0;  // 开始扫描，从卡槽0开始
                 Log.d(TAG, ">>> 扫卡开始 isSimScaning = true");
                 startTime = System.currentTimeMillis();
                 // 切回主卡
@@ -298,6 +300,7 @@ public class BackgroundTaskService extends Service {
                 // 开始扫卡
                 mContext.registerReceiver(simStateReceiver, filter);
                 for (i = 0; i < CommonConstant.MAX_SIM_SLOT; i++) {
+                    currentScanSlot = i;  // 更新当前扫描的卡槽
                     mSimStatus[i] = new DataDef.SimStatus();
                     mSimEmpty[i] = new DataDef.SimStatus();
 
@@ -350,6 +353,7 @@ public class BackgroundTaskService extends Service {
                 }
                 mContext.unregisterReceiver(simStateReceiver);
                 isSimScaning = false;
+                currentScanSlot = -1;  // 扫描结束，重置为-1
                 Log.d(TAG, ">>> 扫卡结束 isSimScaning = false, 耗时=" + ((endTime - startTime) / 1000L) + "秒");
             }
         });
@@ -470,6 +474,11 @@ public class BackgroundTaskService extends Service {
         String operatorName = mSimCardHelper.getOperatorNameSafe();
         setSimStatusOperator(slotIndex, operatorName);
         mSimEmpty[slotIndex].operator = operatorName;
+
+        // 获取ICCID
+        String iccid = mSimCardHelper.getSimSerialNo();
+        mSimStatus[slotIndex].iccid = iccid;
+        mSimEmpty[slotIndex].iccid = "";
 
         String phoneNumber = mSimCardHelper.getPhoneNumber();
         if (phoneNumber != null && phoneNumber.length() > 1) {
@@ -646,6 +655,10 @@ public class BackgroundTaskService extends Service {
 
     public synchronized boolean getDeviceScaningStatus() {
         return isSimScaning;
+    }
+
+    public synchronized int getCurrentScanSlot() {
+        return currentScanSlot;
     }
 
     public synchronized DataDef.SimStatus[] getmSimCardData() {

@@ -304,7 +304,7 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     /**
      * 获取心跳数据
      */
-    public DataDef.HeartbeatData getHeartbeatData(DataDef.SimStatus[] sims, boolean isScaning) {
+    public DataDef.HeartbeatData getHeartbeatData(DataDef.SimStatus[] sims, boolean isScaning, int currentScanSlot) {
         DataDef.HeartbeatData heartbeat = new DataDef.HeartbeatData();
 
         Log.d(TAG, ">>>getHeartbeatData sims = " + sims.toString());
@@ -320,6 +320,8 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
         heartbeat.device.temperature = mBatteryHelper.getTemperature();
         heartbeat.device.networkType = mNetworkHelper.getNetworkType();
         heartbeat.device.scanning = isScaning;
+        // 设置当前扫描的卡槽编号，格式为 "s0", "s1" 等
+        heartbeat.device.currentSlot = isScaning && currentScanSlot >= 0 ? "s" + currentScanSlot : "";
         return heartbeat;
     }
 }
