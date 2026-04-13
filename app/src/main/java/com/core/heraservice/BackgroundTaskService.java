@@ -30,9 +30,11 @@ import android.widget.EditText;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.core.app.NotificationCompat;
 
 import com.android.stk.IStkCallInterface;
+import com.core.heraservice.call.CallphoneManager;
 import com.core.heraservice.network.CommonConstant;
 import com.core.heraservice.network.DataDef;
 import com.core.heraservice.network.WebSocketManager;
@@ -40,6 +42,7 @@ import com.core.heraservice.sim.SimCardHelper;
 import com.core.heraservice.sim.UssdNumberFetcher;
 import com.core.heraservice.sms.SmsSendManager;
 import com.core.heraservice.utils.DeviceRegister;
+import com.core.heraservice.utils.GlobalDialog;
 import com.core.heraservice.utils.GlobalToast;
 import com.core.heraservice.utils.SystemOs;
 import com.core.heraservice.utils.SystemProperty;
@@ -56,14 +59,16 @@ public class BackgroundTaskService extends Service {
     private static final String CHANNEL_ID = "BackgroundServiceChannel";
     private static final int NOTIFICATION_ID = 1;
     private WebSocketManager webSocketManager;
-    private Handler mDeviceRegisterHandler, mWebsocketHandler, mSimcardScanHandler;
-    private HandlerThread mDeviceRegisterHandlerThread, mWebsocketHandlerThread, mSimcardHandlerThread;
+    private Handler mDeviceRegisterHandler, mWebsocketHandler, mSimcardScanHandler, mSimcardSwitchHandler;
+    private HandlerThread mDeviceRegisterHandlerThread, mWebsocketHandlerThread, mSimcardHandlerThread,
+            mSimcardSwitchThread;
     private ConnectivityManager mConnectivityManager;
     private String authKey;
     private String deviceCode;
     private boolean isDeviceRegistered = false;
 
     private SmsSendManager mSmsManager;
+    private CallphoneManager mCallphoneManager;
 
     private CountDownLatch latch = new CountDownLatch(1);
 
@@ -74,10 +79,12 @@ public class BackgroundTaskService extends Service {
     private UssdNumberFetcher mUssdNumberFetcher;
 
     public  DataDef.SimStatus[] mSimStatus = null;
+    public  DataDef.SimStatus[] mSimEmpty = null;
     private static final int MAIN_SIMCARD = 0;
     private static int currentSelectSlotID = 0;
     private static final int MAX_RETRY_COUNT = 12;
-    private static final int MAX_UUSD_RETRY_COUNT = 5;
+    private static final int MAX_UUSD_RETRY_COUNT = 50;
+    private static final int MAX_UUSD_RETRY_COUNT_FOR_SINGAL_CHECK = 10;
     private boolean mSimCardReady = false;
     private String mCurrentSimSerailNum = "";
     private String mMainSimcardSerialNo = "";
@@ -134,6 +141,11 @@ public class BackgroundTaskService extends Service {
         mSimcardHandlerThread.start();
         mSimcardScanHandler = new Handler(mSimcardHandlerThread.getLooper());
 
+        // 初始化simcard 切换handler
+        mSimcardSwitchThread = new HandlerThread("SimSwitchThread");
+        mSimcardSwitchThread.start();
+        mSimcardSwitchHandler = new Handler(mSimcardSwitchThread.getLooper());
+
         // 初始化connectmanager
         mConnectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
 
@@ -143,6 +155,7 @@ public class BackgroundTaskService extends Service {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
 
         mSimStatus = new DataDef.SimStatus[16];
+        mSimEmpty = new DataDef.SimStatus[16];
     }
 
     private void initHttpRequest() {
@@ -196,6 +209,7 @@ public class BackgroundTaskService extends Service {
         });
 
         mWebsocketHandler.post(new Runnable() {
+            @RequiresApi(api = Build.VERSION_CODES.S)
             @Override
             public void run() {
                 try {
@@ -210,12 +224,20 @@ public class BackgroundTaskService extends Service {
                     initWebSocket(deviceCode, authKey);
 
                     // 初始化短信管理类
-                    mSmsManager = new SmsSendManager(mContext, webSocketManager);
-
+                    mSmsManager = new SmsSendManager(mContext, webSocketManager, BackgroundTaskService.this);
                     webSocketManager.setOnSmsSendListener(mSmsManager);
+
+                    if (mSpeechRecognize == null) {
+                        mSpeechRecognize = new SpeechRecognize(mContext);
+                    }
+                    mSpeechRecognize.setWebSocketManager(webSocketManager);
+
+                    // 初始化打电话管理类
+                    mCallphoneManager = new CallphoneManager(mContext, webSocketManager);
+
                     webSocketManager.connect();
 
-                    doSimcardScan(2);
+                    doSimcardScan(2, "");
                 } else {
                     Log.d(TAG, "设备注册失败,请检查设备网络");
                 }
@@ -223,7 +245,7 @@ public class BackgroundTaskService extends Service {
         });
 
         // 绑定STK
-        bindToStk();
+        //bindToStk();
 
         return START_STICKY;
     }
@@ -249,14 +271,15 @@ public class BackgroundTaskService extends Service {
         }
     };
 
-    public void doSimcardScan(int intervalSeconds) {
+    public void doSimcardScan(int intervalSeconds, String scanId) {
         mSimcardScanHandler.post(new Runnable() {
             @Override
             public void run() {
                 int i = 0;
+                long startTime, endTime;
 
                 isSimScaning = true;
-
+                startTime = System.currentTimeMillis();
                 // 切回主卡
                 Intent intent = new Intent(CommonConstant.SWITCH_SIMCARD_ACTION);
                 intent.putExtra("sim_id", 0);
@@ -273,6 +296,7 @@ public class BackgroundTaskService extends Service {
                     int count = 0;
 
                     mSimStatus[i] = new DataDef.SimStatus();
+                    mSimEmpty[i] = new DataDef.SimStatus();
 
                     try {
                         Thread.sleep(3000);
@@ -308,42 +332,58 @@ public class BackgroundTaskService extends Service {
                     if (count > MAX_RETRY_COUNT) {
                         Log.d(TAG, "switch sim slot timeout, simslot not change slotid: " + i);
                         mSimStatus[i].operator = mSimCardHelper.getOperatorName();
+                        mSimEmpty[i].operator = mSimCardHelper.getOperatorName();
                         if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
                             Log.d(TAG, "telephony get phonenumber success！");
                             setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
+                            mSimEmpty[i].cardNumber = "";
                         } else {
                             Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
-                            setSimStatusCardNumber(i, getPhoneNumber());
+                            setSimStatusCardNumber(i, getPhoneNumber(mSimCardHelper.getOperatorName()));
+                            mSimEmpty[i].cardNumber = "";
                         }
                         setSimStatusSlot(i, i + 1 + "");
+                        mSimEmpty[i].slot = i + 1 + "";
                         setSimStatusStatus(i, 1);
+                        mSimEmpty[i].status = 1;
                     } else {
                         if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo())) && (i != 0)) {
                             Log.d(TAG, "switch simcard fail slotid: " + i + " not insert simcard");
                             setSimStatusOperator(i, "NO SIM");
+                            mSimEmpty[i].operator = "NO SIM";
                             setSimStatusCardNumber(i, "NO SIM");
+                            mSimEmpty[i].cardNumber = "";
                             setSimStatusSlot(i, i + 1 + "");
+                            mSimEmpty[i].slot = 1 + "";
                             setSimStatusStatus(i, 0);
+                            mSimEmpty[i].status = 0;
                         } else {
                             Log.d(TAG, "switch simcard success slotid: " + i);
                             setSimStatusOperator(i, mSimCardHelper.getOperatorName());
+                            mSimEmpty[i].operator = mSimCardHelper.getOperatorName();
 
                             if (mSimCardHelper.getPhoneNumber() != null && (mSimCardHelper.getPhoneNumber()).length() > 1) {
                                 Log.d(TAG, "telephony get phonenumber success！");
                                 setSimStatusCardNumber(i, mSimCardHelper.getPhoneNumber());
+                                mSimEmpty[i].cardNumber = "";
                                 setSimStatusStatus(i, 1);
+                                mSimEmpty[i].status = 1;
                             } else {
                                 Log.d(TAG, "telephony get phonenumber fail try use USSD get>>");
                                 String numberByUSSD = "";
-                                numberByUSSD = getPhoneNumber();
+                                numberByUSSD = getPhoneNumber(mSimCardHelper.getOperatorName());
                                 if (numberByUSSD.length() > 1) {
                                     setSimStatusStatus(i, 1);
+                                    mSimEmpty[i].status = 1;
                                 } else {
                                     setSimStatusStatus(i, 0);
+                                    mSimEmpty[i].status = 0;
                                 }
                                 setSimStatusCardNumber(i, numberByUSSD);
+                                mSimEmpty[i].cardNumber = "";
                             }
                             setSimStatusSlot(i, i + 1 + "");
+                            mSimEmpty[i].slot = i + 1 + "";
                             Log.d(TAG, "add slot id = " + mSimStatus[i].slot + " operator = " + mSimStatus[i].operator + " number = " + mSimStatus[i].cardNumber +
                                     " status = " + mSimStatus[i].status);
                         }
@@ -352,21 +392,138 @@ public class BackgroundTaskService extends Service {
                         mMainSimcardSerialNo = mSimCardHelper.getSimSerialNo();
                     }
                 }
+                endTime = System.currentTimeMillis();
+                // 发送扫卡结果
+                Log.d(TAG, "send simcard scan result!");
+                if (scanId.length() >= 1) {
+                    webSocketManager.sendSimScanResult(scanId, mSimStatus, (int) ((endTime - startTime) / 1000L));
+                }
+                try {
+                    Thread.sleep(10000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                if (scanId.length() >= 1) {
+                    webSocketManager.sendSimScanResult(scanId, mSimStatus, (int) ((endTime - startTime) / 1000L));
+                }
                 mContext.unregisterReceiver(simStateReceiver);
                 isSimScaning = false;
             }
         });
     }
 
-    private String getPhoneNumber() {
+    public void switchSimSlot(DataDef.ReceiveCodeData codeData) {
+        String simSlot = codeData.simSlot;
+        int slotID = Integer.parseInt(simSlot);
+        mSimcardSwitchHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                int i = 0;
+                int count = 0;
+                boolean status = false;
+
+                Intent intent = new Intent(CommonConstant.SWITCH_SIMCARD_ACTION);
+                intent.putExtra("sim_id", (slotID - 1) + "");
+                mContext.sendBroadcast(intent);
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+
+                // 开始切卡
+                mContext.registerReceiver(simStateReceiver, filter);
+
+                while (count <= MAX_RETRY_COUNT) {
+                    if (mSimCardReady) {
+                        try {
+                            Thread.sleep(3000);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                        Log.d(TAG, "switchSimSlot ready new imei  = " + mSimCardHelper.getSimSerialNo());
+                        break;
+                    }
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    count++;
+                }
+
+                if (count > MAX_RETRY_COUNT) {
+                    Log.d(TAG, "switchSimSlot timeout, simslot not change slotid: " + slotID);
+                    status = true;
+                } else {
+                    if ((mMainSimcardSerialNo.equals(mSimCardHelper.getSimSerialNo())) && ((slotID - 1) != 0)) {
+                        Log.d(TAG, "switchSimSlot fail slotid: " + slotID + " not insert simcard");
+                        status = false;
+                    } else {
+                        Log.d(TAG, "switchSimSlot success slotid: " + slotID);
+                        status = true;
+                    }
+                }
+                mSpeechRecognize.startReceiveCode(codeData, status);
+                mContext.unregisterReceiver(simStateReceiver);
+            }
+        });
+    }
+
+
+    public String getPhoneNumber(String name) {
         int count = 0;
         String number = "";
+        String code = "*139#";
+
+        SystemProperty.set("sys.phone_number", "");
+        if (name != null) {
+            if (name.toLowerCase().contains("maxis")) {
+                code = "*139#";
+            } else if (name.toLowerCase().contains("digi")) {
+                code = "*126#";
+            } else if (name.toLowerCase().contains("u mobile")) {
+                code = "*118*6#";
+            } else if (name.toLowerCase().contains("celcom")) {
+                code = "*126#";
+            } else if (name.toLowerCase().contains("uni")) {
+                code = "*123#";
+            } else if (name.toLowerCase().contains("viettel")) {
+                code = "*098#";
+            } else if (name.toLowerCase().contains("vinaphone")) {
+                code = "*110#";
+            } else if (name.toLowerCase().contains("vietnamobile")) {
+                code = "*123#";
+            } else if (name.toLowerCase().contains("yettel")) {
+                code = "*121#";
+            } else if (name.toLowerCase().contains("vodafone")) {
+                code = "*138#";
+            } else if (name.toLowerCase().contains("atom")) {
+                code = "*97#";
+            } else if (name.toLowerCase().contains("mtp") || name.toLowerCase().contains("mytel") ||
+                    name.toLowerCase().contains("u9")) {
+                code = "*124#";
+            } else if (name.toLowerCase().contains("bangalink") || name.toLowerCase().contains("airtel") ||
+                    name.toLowerCase().contains("grameenphone") || name.toLowerCase().contains("robi")) {
+                code = "*121#";
+            } else {
+                code = "*139#";
+            }
+        }
+
+        Log.d(TAG, "getPhoneNumberoperator = " + name + " code = " + code);
+
         while (count <= MAX_UUSD_RETRY_COUNT) {
             try {
-                number = mUssdNumberFetcher.sendUssdRequest("*139#");
+                number = mUssdNumberFetcher.sendUssdRequest(code);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
+            if (number.length() > 1) {
+                number = "+" + number;
+                break;
+            }
+            number = SystemProperty.get("sys.phone_number", "");
             if (number.length() > 1) {
                 number = "+" + number;
                 break;
@@ -380,19 +537,90 @@ public class BackgroundTaskService extends Service {
             Log.d(TAG, "sendUssdRequest fail retry count = " + count);
         }
         if (count >= MAX_UUSD_RETRY_COUNT) {
-            Log.w(TAG, "sendUssdRequest retry maxcount still fail!");
+            Log.w(TAG, "sendUssdRequest retry maxcount still fail, start get by property>>");
         }
         return number;
     }
+
+    public boolean checkSimcardSignal() {
+        int count = 0;
+        String number = "";
+        String name = "";
+        String code = "*139#";
+
+        SystemProperty.set("sys.phone_number", "");
+        while (count <= MAX_UUSD_RETRY_COUNT_FOR_SINGAL_CHECK) {
+            name = mSimCardHelper.getOperatorName();
+            if (name != null) {
+                if (name.toLowerCase().contains("maxis")) {
+                    code = "*139#";
+                } else if (name.toLowerCase().contains("digi")) {
+                    code = "*126#";
+                } else if (name.toLowerCase().contains("u mobile")) {
+                    code = "*118*6#";
+                } else if (name.toLowerCase().contains("celcom")) {
+                    code = "*126#";
+                } else if (name.toLowerCase().contains("uni")) {
+                    code = "*123#";
+                } else if (name.toLowerCase().contains("viettel")) {
+                    code = "*098#";
+                } else if (name.toLowerCase().contains("vinaphone:")) {
+                    code = "*110#";
+                } else if (name.toLowerCase().contains("vietnamobile")) {
+                    code = "*123#";
+                } else if (name.toLowerCase().contains("yettel")) {
+                    code = "*121#";
+                } else if (name.toLowerCase().contains("vodafone")) {
+                    code = "*138#";
+                } else if (name.toLowerCase().contains("atom")) {
+                    code = "*97#";
+                } else if (name.toLowerCase().contains("mtp") || name.toLowerCase().contains("mytel") ||
+                        name.toLowerCase().contains("u9")) {
+                    code = "*124#";
+                } else if (name.toLowerCase().contains("bangalink") || name.toLowerCase().contains("airtel") ||
+                        name.toLowerCase().contains("grameenphone") || name.toLowerCase().contains("robi")) {
+                    code = "*121#";
+                } else {
+                    code = "*139#";
+                }
+            }
+            try {
+                number = mUssdNumberFetcher.sendUssdRequest(code);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            if (number.length() > 1) {
+                number = "+" + number;
+                break;
+            }
+            count++;
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            Log.d(TAG, "[CheckSignal]sendUssdRequest fail retry count = " + count);
+        }
+        if (count >= MAX_UUSD_RETRY_COUNT_FOR_SINGAL_CHECK) {
+            Log.w(TAG, "[CheckSignal] sendUssdRequest retry maxcount still fail, start get by property>>");
+            number = SystemProperty.get("sys.phone_number", "");
+        }
+        return number.length() > 1 ? true : false;
+    }
+
 
     public synchronized boolean getDeviceScaningStatus() {
         return isSimScaning;
     }
 
     public synchronized DataDef.SimStatus[] getmSimCardData() {
-        return mSimStatus;
+        if (isSimScaning) {
+            Log.d(TAG, "simcard scaning use none cardnumber data>>>");
+            return mSimEmpty;
+        } else {
+            return mSimStatus;
+        }
     }
-
 
     public synchronized void setSimStatusOperator(int i, String operator) {
         mSimStatus[i].operator = operator;
@@ -551,6 +779,7 @@ public class BackgroundTaskService extends Service {
                         mGlobalToast.showCustomToast("激活成功");
                         latch.countDown();
                         hideInputDialog();
+                        SystemOs.writeAuthkey(CommonConstant.CARD_KEY_FILE, cardKey);
                     } else {
                         mGlobalToast.showCustomToast("激活时失败, 设备异常");
                         String errorMsg = response.getString("message");

@@ -4,7 +4,10 @@ import static android.os.Looper.getMainLooper;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
@@ -28,6 +31,10 @@ import com.alibaba.idst.nui.Constants;
 import com.alibaba.idst.nui.INativeNuiCallback;
 import com.alibaba.idst.nui.KwsResult;
 import com.alibaba.idst.nui.NativeNui;
+import com.core.heraservice.network.CommonConstant;
+import com.core.heraservice.network.DataDef;
+import com.core.heraservice.network.WebSocketManager;
+import com.core.heraservice.utils.SystemProperty;
 import com.core.heraservice.utils.Utils;
 
 import android.media.AudioPlaybackCaptureConfiguration;
@@ -40,11 +47,14 @@ import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RequiresApi(api = Build.VERSION_CODES.S)
 public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCallback, TelephonyCallback.CallStateListener {
-    private static final String TAG = "SpeechRecognizer";
+    private static final String TAG = " SpeechRecognizer";
 
     private String g_appkey = "KfKjXbKWkkefUKpf";
     private String g_token = "";
@@ -71,6 +81,12 @@ public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCal
     static private int MAX_RETRY_COUNT = 3;
 
     private LinkedBlockingQueue<byte[]> tmpAudioQueue = new LinkedBlockingQueue();
+    WebSocketManager webSocketManager;
+
+    static private volatile String mVoiceCode = "";
+    static private volatile String mSmsCode = "";
+    static private volatile String mCurrentSlot = "";
+    static private volatile String mCurrentPhoneNum = "";
 
     @SuppressLint("WrongConstant")
     public SpeechRecognize(Context context) {
@@ -79,6 +95,23 @@ public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCal
         telephonyManager = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
         telephonyManager.registerTelephonyCallback(context.getMainExecutor(), this);
         telecomManager = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+        mContext.registerReceiver(new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String sms_code = intent.getStringExtra("sms_code");
+                mSmsCode = sms_code;
+
+                if (webSocketManager != null) {
+                    webSocketManager.sendSmsCodeResult(mCurrentSlot, mCurrentPhoneNum, mSmsCode);
+                }  else {
+                    Log.e(TAG, "webSocketManager is null can not sendSmsCodeResult>>");
+                }
+            }
+        }, new IntentFilter(CommonConstant.RECEIVE_SMS_CODE_ACTION));
+    }
+
+    public void setWebSocketManager(WebSocketManager webSocketManager) {
+        this.webSocketManager = webSocketManager;
     }
 
     private void doInit() {
@@ -285,6 +318,18 @@ public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCal
             JSONObject payload = jsonObject.getJSONObject("payload");
             String result = payload.getString("result");
             Log.d(TAG, "onNuiEventCallback onNuiEventCallback result = " + result);
+
+            Pattern pattern = Pattern.compile("(?<!\\d)(\\d{4,6})(?!\\d)");
+            Matcher matcher = pattern.matcher(result);
+            if (matcher.find()) {
+                mVoiceCode = matcher.group(1);
+                if (webSocketManager != null) {
+                    webSocketManager.sendVoiceCodeResult(mCurrentSlot, mCurrentPhoneNum, mVoiceCode);
+                    Log.d(TAG, ">>>received voice code : " + mVoiceCode);
+                } else {
+                    Log.d(TAG, "webSocketManager is null can not send voicecode>>>");
+                }
+            }
         } else if (event == Constants.NuiEvent.EVENT_ASR_PARTIAL_RESULT) {
             JSONObject jsonObject = JSON.parseObject(asrResult.asrResult);
             JSONObject payload = jsonObject.getJSONObject("payload");
@@ -456,6 +501,7 @@ public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCal
             case TelephonyManager.CALL_STATE_IDLE:
                 Log.d(TAG, "电话挂断/空闲：停止录音");
                 long ret = nui_instance.stopDialog();
+                nui_instance.cancelDialog();
                 Log.i(TAG, "cancel dialog " + ret + " end");
                 break;
 
@@ -494,38 +540,15 @@ public class SpeechRecognize  extends TelephonyCallback implements INativeNuiCal
             Log.e(TAG, "Media Button simulation failed", e);
         }
     }
-    /*
-    private void writePcmDataToFile(int bufferSize) {
-        // 创建文件：这里保存在 App 私有目录的 Music 文件夹下，无需额外存储权限
-        // 路径示例: /sdcard/Android/data/com.your.package/files/Music/call_xxx.pcm
-        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC);
-        // 或者使用 context.getExternalFilesDir(Environment.DIRECTORY_MUSIC);
 
-        if (!dir.exists()) dir.mkdirs();
-
-        String fileName = "Call_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date()) + ".pcm";
-        File currentFile = new File(dir, fileName);
-
-        FileOutputStream os = null;
-        try {
-            os = new FileOutputStream(currentFile);
-            byte[] data = new byte[bufferSize];
-
-            while (isRecording) {
-                int readResult = mAudioRecorder.read(data, 0, bufferSize);
-                if (readResult > 0) {
-                    Log.d(TAG, "write pcm date len = " + readResult);
-                    os.write(data, 0, readResult);
-                }
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "File write failed", e);
-        } finally {
-            try {
-                if (os != null) os.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+    public void startReceiveCode(DataDef.ReceiveCodeData codeData, boolean status) {
+        mSmsCode = "";
+        mVoiceCode = "";
+        if (webSocketManager != null) {
+            // 发送切卡成功/失败状态
+            webSocketManager.sendSwitchSimResult(codeData.sessionId, codeData.simSlot, codeData.phoneNumber, status);
+            mCurrentPhoneNum = codeData.phoneNumber;
+            mCurrentSlot = codeData.simSlot;
         }
-    }*/
+    }
 }

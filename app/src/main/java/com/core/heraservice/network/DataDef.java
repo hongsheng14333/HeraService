@@ -1,5 +1,7 @@
 package com.core.heraservice.network;
 
+import android.provider.ContactsContract;
+
 import com.google.gson.JsonElement;
 import java.util.List;
 public class DataDef {
@@ -26,7 +28,7 @@ public class DataDef {
     }
 
     // SIM卡状态
-    public static class SimStatus {
+    public static class SimStatus{
         public String slot;
         public int status;
         public double balance;
@@ -34,6 +36,13 @@ public class DataDef {
         public String operator;
         public String cardNumber;
     }
+
+    public static class SimScanResultData {
+        String scanId;
+        List<SimStatus> sims;
+        int scanDuration;
+    }
+
 
     // 设备状态
     public static class DeviceStatus {
@@ -220,6 +229,43 @@ public class DataDef {
         public String  scanId;
         boolean scanAll;
         public int intervalSeconds;
+    }
+
+    public class PongData {
+        int code;
+        public String  message;
+    }
+
+    public class ReceiveCodeData {
+        public int  sessionId;
+        public String simSlot;
+        public String phoneNumber;
+        public String otpMode;
+        public int timeoutSec;
+        public String projectName;
+    }
+
+    public static class SwitchSimResultData {
+        public int  sessionId;
+        String simSlot;
+        public String phoneNumber;
+    }
+
+    public static class SmsCodeResultData {
+        public String simSlot;
+        public String phoneNumber;
+        public String senderNumber;
+        public String smsCode;
+
+        public long receivedAt;
+    }
+
+    public static class VoiceCodeResultData {
+        public String simSlot;
+        public String phoneNumber;
+        public String callerNumbe;
+        public String voiceCode;
+        int duration;
     }
 
     /**

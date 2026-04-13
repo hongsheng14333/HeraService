@@ -3,12 +3,14 @@ package com.core.heraservice.network;
 import static com.core.heraservice.network.CommonConstant.HTTP_URL;
 
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
 import okhttp3.*;
 import okio.ByteString;
 import org.json.JSONObject;
 
+import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -16,8 +18,11 @@ import java.util.concurrent.TimeUnit;
 import com.core.heraservice.BackgroundTaskService;
 import com.core.heraservice.network.DataDef;
 import com.core.heraservice.sms.SmsSendManager;
+import com.core.heraservice.utils.GlobalDialog;
 import com.core.heraservice.utils.GlobalToast;
+import com.core.heraservice.utils.SystemOs;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 
 public class WebSocketManager {
     private static final String TAG = "WebSocketManager";
@@ -37,6 +42,9 @@ public class WebSocketManager {
     private ScheduledExecutorService heartbeatExecutor;
     private BackgroundTaskService mBackgroundTaskService;
 
+    private Handler mCommonTaskHandler;
+    private HandlerThread mCommonTaskHandlerThread;
+
     public interface WebSocketListener {
         void onConnected();
         void onDisconnected(int code, String reason);
@@ -54,6 +62,11 @@ public class WebSocketManager {
         this.deviceCode = deviceCode;
         this.authKey = authKey;
         this.listener = listener;
+
+        mCommonTaskHandlerThread = new HandlerThread("CommonTaskThread");
+        mCommonTaskHandlerThread.start();
+        mCommonTaskHandler = new Handler(mCommonTaskHandlerThread.getLooper());
+
         initClient();
     }
 
@@ -61,7 +74,7 @@ public class WebSocketManager {
         client = new OkHttpClient.Builder()
                 .pingInterval(30, TimeUnit.SECONDS) // 心跳保活
                 .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(0, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)
                 .build();
     }
@@ -82,6 +95,10 @@ public class WebSocketManager {
                     if (listener != null) {
                         listener.onConnected();
                     }
+                    /*
+                    if (mBackgroundTaskService != null && mBackgroundTaskService.getmGlobalToast() != null) {
+                        mBackgroundTaskService.getmGlobalToast().hideCustomTip();
+                    }*/
                 }
 
                 @Override
@@ -108,7 +125,7 @@ public class WebSocketManager {
 
                 @Override
                 public void onFailure(okhttp3.WebSocket webSocket, Throwable t, Response response) {
-                    Log.e(TAG, "连接失败: " + t.getMessage());
+                    Log.e(TAG, "连接失败: " + t);
                     isConnected = false;
                     if (listener != null) {
                         listener.onError(t);
@@ -149,9 +166,7 @@ public class WebSocketManager {
                         Log.d(TAG,"剩余天数: " + remainingDays);
                     }
                     Log.d(TAG,"请联系管理员续期或使用新的激活码");
-                    if (null != mBackgroundTaskService && null != mBackgroundTaskService.getmGlobalToast()) {
-                        mBackgroundTaskService.getmGlobalToast().showCustomToast("请联系管理员续期或使用新的激活码");
-                    }
+                    String cardKey = SystemOs.readAuthkey(CommonConstant.CARD_KEY_FILE);
                 }
                 Log.d(TAG,"⚠️ 已停止自动重连，请处理激活问题后手动重新连接");
                 if (null != mBackgroundTaskService && null != mBackgroundTaskService.getmGlobalToast()) {
@@ -233,6 +248,95 @@ public class WebSocketManager {
         webSocket.send(gson.toJson(message));
     }
 
+    public void sendSwitchSimResult(int sessionId, String simSlot, String phoneNumber, boolean success) {
+        if (!isConnected || webSocket == null) return;
+
+        DataDef.SwitchSimResultData result = new DataDef.SwitchSimResultData();
+        result.sessionId = sessionId;
+        result.simSlot = simSlot;
+        result.phoneNumber = phoneNumber;
+
+        DataDef.DeviceMessage message = new DataDef.DeviceMessage();
+        if (success) {
+            message.type = "RECEIVE_CODE_READY";
+        }  else {
+            message.type = "RECEIVE_CODE_FAIL";
+        }
+        message.data = gson.toJsonTree(result);
+        message.timestamp = System.currentTimeMillis() / 1000;
+
+        webSocket.send(gson.toJson(message));
+    }
+
+
+    public void sendVoiceCodeResult(String simSlot, String phoneNumber, String code) {
+        if (!isConnected || webSocket == null) return;
+
+        DataDef.VoiceCodeResultData result = new DataDef.VoiceCodeResultData();
+        result.simSlot = simSlot;
+        result.phoneNumber = phoneNumber;
+        result.voiceCode = code;
+
+        DataDef.DeviceMessage message = new DataDef.DeviceMessage();
+        message.type = "VOICE_RECEIVED";
+        message.data = gson.toJsonTree(result);
+        message.timestamp = System.currentTimeMillis() / 1000;
+
+        webSocket.send(gson.toJson(message));
+    }
+
+    public void sendSmsCodeResult(String simSlot, String phoneNumber, String code) {
+        if (!isConnected || webSocket == null) return;
+
+        DataDef.SmsCodeResultData result = new DataDef.SmsCodeResultData();
+        result.simSlot = simSlot;
+        result.phoneNumber = phoneNumber;
+        result.smsCode = code;
+
+        DataDef.DeviceMessage message = new DataDef.DeviceMessage();
+        message.type = "SMS_RECEIVED";
+        message.data = gson.toJsonTree(result);
+        message.timestamp = System.currentTimeMillis() / 1000;
+
+        webSocket.send(gson.toJson(message));
+    }
+
+    public void sendSimScanResult(String scanId, DataDef.SimStatus[] simItems, int scanTime) {
+        if (!isConnected || webSocket == null) {
+            return;
+        }
+
+        DataDef.SimScanResultData result = new DataDef.SimScanResultData();
+        result.scanId = scanId;
+        result.sims = Arrays.asList(simItems);
+        result.scanDuration = scanTime;
+
+        DataDef.DeviceMessage message = new DataDef.DeviceMessage();
+        message.type = "SIM_SCAN_RESULT";
+        message.data = gson.toJsonTree(result);
+        message.timestamp = System.currentTimeMillis() / 1000;
+
+        String json = gson.toJson(message);
+        Log.d(TAG, "sendSimScanResult scanId = " + scanId + " data = " + json.toString());
+        webSocket.send(json);
+    }
+
+    private void sendPongToServerkAck() {
+        if (!isConnected || webSocket == null) {
+            return;
+        }
+
+        DataDef.DeviceMessage message = new DataDef.DeviceMessage();
+        message.type = "pong";
+        message.data = gson.toJsonTree("");
+        message.timestamp = System.currentTimeMillis() / 1000;
+
+        String json = gson.toJson(message);
+        webSocket.send(json);
+
+    }
+
+
     // 处理收到的消息
     private void handleMessage(String message) {
         try {
@@ -264,15 +368,47 @@ public class WebSocketManager {
                     DataDef.SimScanData scanData = gson.fromJson(msg.data, DataDef.SimScanData.class);
                     if (scanData != null) {
                         if (mBackgroundTaskService.getDeviceScaningStatus()) {
-                            Log.d(TAG, "device is scaning simcard skip...");
-                        } else {
-                            Log.d(TAG, "start simcard scaning intervalSeconds = " + scanData.intervalSeconds);
-                            mBackgroundTaskService.doSimcardScan(scanData.intervalSeconds);
+                                Log.d(TAG, "device is scaning simcard skip...");
+                            } else {
+                                Log.d(TAG, "start simcard scaning intervalSeconds = " + scanData.intervalSeconds);
+                                mBackgroundTaskService.doSimcardScan(scanData.intervalSeconds, scanData.scanId);
+                            }
                         }
+                        break;
+                    case "RECEIVE_CODE_START":
+                    DataDef.ReceiveCodeData codeData = gson.fromJson(msg.data, DataDef.ReceiveCodeData.class);
+                    if (codeData != null) {
+                        mBackgroundTaskService.switchSimSlot(codeData);
                     }
-
+                    break;
+                case "PONG":
+                    DataDef.PongData pongData = gson.fromJson(msg.data, DataDef.PongData.class);
+                    if (pongData != null) {
+                        if (pongData.code == 403) {
+                            Log.d(TAG,pongData.message + ", 请联系客服");
+                            String cardKey = SystemOs.readAuthkey(CommonConstant.CARD_KEY_FILE);
+                            if (null != mBackgroundTaskService && null != mBackgroundTaskService.getmGlobalToast()) {
+                                mCommonTaskHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        GlobalDialog.getInstance().show(mBackgroundTaskService, "设备已过期，请联系客服，当前卡密: " + cardKey);
+                                    }
+                                });
+                            }
+                        }
+                    } else {
+                        Log.d(TAG,"device pong is normal!");
+                        mCommonTaskHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                GlobalDialog.getInstance().dismiss();
+                            }
+                        });
+                    }
                     break;
                 case "ping":
+                    Log.d(TAG, "receive server ping msg content: " + msg.data);
+                    sendPongToServerkAck();
                     break;
                 default:
                     Log.d(TAG, "unknow type : " + msg.type);
