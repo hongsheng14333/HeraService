@@ -41,6 +41,7 @@ public class WebSocketManager {
     private OnSmsSendListener smsSendListener;
     private ScheduledExecutorService heartbeatExecutor;
     private BackgroundTaskService mBackgroundTaskService;
+    private SmsSendManager mSendManager;  // 心跳发送管理器
 
     private Handler mCommonTaskHandler;
     private HandlerThread mCommonTaskHandlerThread;
@@ -190,6 +191,7 @@ public class WebSocketManager {
      * 启动心跳循环
      */
     public void startHeartbeatLoop(int intervalSeconds, SmsSendManager sendManager) {
+        mSendManager = sendManager;  // 保存引用
         if (heartbeatExecutor != null && !heartbeatExecutor.isShutdown()) {
             return;
         }
@@ -198,11 +200,11 @@ public class WebSocketManager {
         heartbeatExecutor.scheduleAtFixedRate(() -> {
             if (isConnected) {
                 try {
-                    if (sendManager != null && mBackgroundTaskService != null) {
+                    if (mSendManager != null && mBackgroundTaskService != null) {
                         boolean isScanning = mBackgroundTaskService.getDeviceScaningStatus();
                         int currentScanSlot = mBackgroundTaskService.getCurrentScanSlot();
                         Log.d(TAG, ">>> 定时心跳发送, isScanning=" + isScanning + ", currentScanSlot=" + currentScanSlot);
-                        sendHeartbeat(sendManager.getHeartbeatData(mBackgroundTaskService.getmSimCardData(),
+                        sendHeartbeat(mSendManager.getHeartbeatData(mBackgroundTaskService.getmSimCardData(),
                                         isScanning, currentScanSlot));
                     }
                 } catch (Exception e) {
@@ -226,6 +228,20 @@ public class WebSocketManager {
         message.timestamp = System.currentTimeMillis() / 1000;
 
         webSocket.send(gson.toJson(message));
+    }
+
+    /**
+     * 立即发送心跳（用于扫描状态变化时通知前端）
+     * @param isScanning 是否正在扫描
+     */
+    public void sendHeartbeatImmediate(boolean isScanning) {
+        if (!isConnected || webSocket == null || mSendManager == null || mBackgroundTaskService == null) return;
+
+        int currentSlot = isScanning ? mBackgroundTaskService.getCurrentScanSlot() : -1;
+        DataDef.HeartbeatData heartbeat = mSendManager.getHeartbeatData(
+            mBackgroundTaskService.getmSimCardData(), isScanning, currentSlot);
+        sendHeartbeat(heartbeat);
+        Log.d(TAG, ">>> 立即发送心跳 scanning=" + isScanning + ", currentSlot=" + currentSlot);
     }
 
     public void setOnSmsSendListener(OnSmsSendListener listener) {
@@ -376,7 +392,7 @@ public class WebSocketManager {
                             } else {
                                 Log.d(TAG, "start simcard scaning intervalSeconds = " + scanData.intervalSeconds);
                                 // 立即发送一次心跳，携带 scanning=true, currentScanSlot=0
-                                sendHeartbeat(sendManager.getHeartbeatData(
+                                sendHeartbeat(mSendManager.getHeartbeatData(
                                     mBackgroundTaskService.getmSimCardData(), true, 0));
                                 Log.d(TAG, ">>> 已发送心跳 scanning=true, currentScanSlot=0");
                                 mBackgroundTaskService.doSimcardScan(scanData.intervalSeconds, scanData.scanId);

@@ -355,6 +355,8 @@ public class BackgroundTaskService extends Service {
                 isSimScaning = false;
                 currentScanSlot = -1;  // 扫描结束，重置为-1
                 Log.d(TAG, ">>> 扫卡结束 isSimScaning = false, 耗时=" + ((endTime - startTime) / 1000L) + "秒");
+                // 扫描结束后立即发送心跳，通知前端扫描状态已更新
+                webSocketManager.sendHeartbeatImmediate(false);
             }
         });
     }
