@@ -321,15 +321,20 @@ public class BackgroundTaskService extends Service {
                     String switchedSerialNo = normalizeSimSerialNo(mSimCardHelper.getSimSerialNo());
 
                     if (!switchReady) {
-                        Log.d(TAG, "switch sim slot timeout or not stable, slotid: " + i + " serial=" + switchedSerialNo);
-                        markSlotAsNoSim(i);
+                        if (i == 0) {
+                            Log.d(TAG, "###add main slot slotid: " + i + " serial=" + switchedSerialNo);
+                            fillSlotInfo(i);
+                        } else {
+                            Log.d(TAG, "!!!switch sim slot timeout or not stable, slotid: " + i + " serial=" + switchedSerialNo);
+                            markSlotAsNoSim(i);
+                        }
                     } else {
                         Log.d(TAG, "switch simcard ready slotid: " + i + " serial=" + switchedSerialNo);
                         if (isLikelyEmptySlot(i, switchedSerialNo)) {
-                            Log.d(TAG, "switch simcard judged empty slotid: " + i);
+                            Log.d(TAG, "!!!switch simcard judged empty slotid: " + i);
                             markSlotAsNoSim(i);
                         } else {
-                            Log.d(TAG, "switch simcard success slotid: " + i);
+                            Log.d(TAG, "###switch simcard success slotid: " + i);
                             fillSlotInfo(i);
                         }
                     }
@@ -343,14 +348,7 @@ public class BackgroundTaskService extends Service {
                 if (scanId.length() >= 1) {
                     webSocketManager.sendSimScanResult(scanId, mSimStatus, (int) ((endTime - startTime) / 1000L));
                 }
-                try {
-                    Thread.sleep(10000);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-                if (scanId.length() >= 1) {
-                    webSocketManager.sendSimScanResult(scanId, mSimStatus, (int) ((endTime - startTime) / 1000L));
-                }
+
                 mContext.unregisterReceiver(simStateReceiver);
                 isSimScaning = false;
                 currentScanSlot = -1;  // 扫描结束，重置为-1
@@ -508,7 +506,7 @@ public class BackgroundTaskService extends Service {
         mSimEmpty[slotIndex].cardNumber = "";
         setSimStatusSlot(slotIndex, slotIndex + 1 + "");
         mSimEmpty[slotIndex].slot = slotIndex + 1 + "";
-        Log.d(TAG, "add slot id = " + mSimStatus[slotIndex].slot + " operator = " + mSimStatus[slotIndex].operator + " number = " + mSimStatus[slotIndex].cardNumber +
+        Log.d(TAG, "###add slot id = " + mSimStatus[slotIndex].slot + " operator = " + mSimStatus[slotIndex].operator + " number = " + mSimStatus[slotIndex].cardNumber +
                 " status = " + mSimStatus[slotIndex].status);
     }
 

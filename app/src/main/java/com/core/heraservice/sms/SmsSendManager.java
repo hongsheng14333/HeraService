@@ -28,6 +28,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 
 public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     private static final int MAX_RETRY_COUNT = 12;
@@ -38,6 +39,7 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     private static final String TAG = "SmsSendManager";
     private static final String SENT_SMS_ACTION = "com.core.heraservice.SMS_SENT_ACTION";
     private static final String DELIVERED_SMS_ACTION = "com.core.heraservice.SMS_DELIVERED_ACTION";
+    private static final String EXTRA_SMS_REQUEST_ID = "sms_request_id";
     IntentFilter filter = new IntentFilter(SENT_SMS_ACTION);
     DataDef.SimStatus[] simcarData;
     private static int currentIndex = 0;
@@ -110,33 +112,15 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
                             }
                             Thread.sleep(10000);
                             // 发送短信
-                            SmsSendReceiver.setSendSmsStatus(false);
-                            sendSms(data.phoneNumber, data.content);
-                            int count = 0;
-                            while (count <= MAX_RETRY_COUNT) {
-                                if (SmsSendReceiver.getSendSmsStatus()) {
-                                    try {
-                                        Thread.sleep(1000);
-                                    } catch (InterruptedException e) {
-                                        throw new RuntimeException(e);
-                                    }
-                                    break;
-                                }
-                                try {
-                                    Thread.sleep(1000);
-                                } catch (InterruptedException e) {
-                                    throw new RuntimeException(e);
-                                }
-                                count++;
-                            }
-                            if (count > MAX_RETRY_COUNT && !SmsSendReceiver.getSendSmsStatus()) {
+                            SmsSendResult result = sendSmsAndWait(data.phoneNumber, data.content);
+                            if (!result.success) {
                                 Log.d(TAG, "**************** sms send fail ****************");
                                 Log.d(TAG, "simcard id: " + simcarData[i].slot);
                                 Log.d(TAG, "simcard number: " + simcarData[i].cardNumber);
                                 Log.d(TAG, "targent number: " + data.phoneNumber);
                                 Log.d(TAG, "send message: " + data.content);
                                 Log.d(TAG, "*************************************************");
-                                mWorkManager.sendSmsResult(data.smsId, false, "发送失败");
+                                mWorkManager.sendSmsResult(data.smsId, false, result.message);
                             } else {
                                 Log.d(TAG, "**************** sms send sucess ****************");
                                 Log.d(TAG, "simcard id: " + simcarData[i].slot);
@@ -175,6 +159,7 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
                         // 2.切到指定SIM卡
                         if (Integer.parseInt(simcarData[i].slot) > 0) {
                             intentSim.putExtra("sim_id", (Integer.parseInt(simcarData[i].slot) - 1) + "");
+                            Log.d(TAG, ">>>start switch sim id = " + (Integer.parseInt(simcarData[i].slot) - 1));
                             mContext.sendBroadcast(intentSim);
                             Thread.sleep(5000);
 
@@ -191,43 +176,20 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
                             Log.d(TAG, ">>>current simlist max = " + data.smsList.size());
                             // 3.开始轮询发送短信
                             for (int j = 0; j < data.maxPerCard; j++) {
-                                int count = 0;
                                 Log.d(TAG, "#slot = " + i + "start send j = " + j + " targetNumber = " + data.smsList.get((index * data.maxPerCard) + j).phoneNumber +
                                         " content = " + data.smsList.get((index* data.maxPerCard) + j).content);
-                                SmsSendReceiver.setSendSmsStatus(false);
-                                sendSms(data.smsList.get((index * data.maxPerCard) + j).phoneNumber, data.smsList.get((index * data.maxPerCard) + j).content);
-                                while (count <= MAX_RETRY_COUNT) {
-                                    if (SmsSendReceiver.getSendSmsStatus()) {
-                                        try {
-                                            Thread.sleep(1000);
-                                        } catch (InterruptedException e) {
-                                            throw new RuntimeException(e);
-                                        }
-                                        break;
-                                    }
-                                    try {
-                                        Thread.sleep(1000);
-                                    } catch (InterruptedException e) {
-                                        throw new RuntimeException(e);
-                                    }
-                                    count++;
-                                }
-                                if (count > MAX_RETRY_COUNT && !SmsSendReceiver.getSendSmsStatus()) {
+                                SmsSendResult result = sendSmsAndWait(
+                                        data.smsList.get((index * data.maxPerCard) + j).phoneNumber,
+                                        data.smsList.get((index * data.maxPerCard) + j).content
+                                );
+                                if (!result.success) {
                                     Log.d(TAG, "**************** sms send fail ****************");
                                     Log.d(TAG, "simcard id: " + simcarData[i].slot);
                                     Log.d(TAG, "simcard number: " + simcarData[i].cardNumber);
                                     Log.d(TAG, "targent number: " + data.smsList.get((index * data.maxPerCard) + j).phoneNumber);
                                     Log.d(TAG, "send message: " + data.smsList.get((index * data.maxPerCard) + j).content);
                                     Log.d(TAG, "*************************************************");
-                                    mWorkManager.sendSmsResult(data.smsList.get((index * data.maxPerCard) + j).smsId, false, "发送失败");
-//                                    int finalIndex = index;
-//                                    int finalJ = j;
-//                                    mDelayHandler.postDelayed(new Runnable() {
-//                                        @Override
-//                                        public void run() {
-//                                            mWorkManager.sendSmsResult(data.smsList.get((finalIndex * data.maxPerCard) + finalJ).smsId, false, "发送失败");
-//                                        }
-//                                    }, 8000);
+                                    mWorkManager.sendSmsResult(data.smsList.get((index * data.maxPerCard) + j).smsId, false, result.message);
                                 } else {
                                     Log.d(TAG, "**************** sms send sucess ****************");
                                     Log.d(TAG, "simcard id: " + simcarData[i].slot);
@@ -236,14 +198,6 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
                                     Log.d(TAG, "send message: " + data.smsList.get((index * data.maxPerCard) + j).content);
                                     Log.d(TAG, "*************************************************");
                                     mWorkManager.sendSmsResult(data.smsList.get((index * data.maxPerCard) + j).smsId, true, "发送成功");
-//                                    int finalIndex1 = index;
-//                                    int finalJ1 = j;
-//                                    mDelayHandler.postDelayed(new Runnable() {
-//                                        @Override
-//                                        public void run() {
-//                                            mWorkManager.sendSmsResult(data.smsList.get((finalIndex1 * data.maxPerCard) + finalJ1).smsId, true, "发送成功");
-//                                        }
-//                                    }, 8000);
                                 }
                                 Log.d(TAG, "send sms intervalSeconds = " + data.intervalSeconds);
                                 Thread.sleep(data.intervalSeconds * 1000);
@@ -261,11 +215,42 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
     }
 
     private void sendSms(String phoneNumber, String message) {
+        sendSms(phoneNumber, message, null);
+    }
+
+    private SmsSendResult sendSmsAndWait(String phoneNumber, String message) {
+        String requestId = UUID.randomUUID().toString();
+        int partCount = 1;
+        SmsManager smsManager = mContext.getSystemService(SmsManager.class);
+        if (smsManager != null && message != null && message.length() > 70) {
+            partCount = smsManager.divideMessage(message).size();
+        }
+        SmsSendReceiver.SendResult sendResult = SmsSendReceiver.registerRequest(requestId, partCount);
+        try {
+            sendSms(phoneNumber, message, requestId);
+            boolean finished = sendResult.await();
+            if (!finished) {
+                Log.w(TAG, "send sms wait timeout requestId=" + requestId + " phone=" + phoneNumber);
+                return new SmsSendResult(false, "发送结果超时");
+            }
+            return new SmsSendResult(sendResult.isSuccess(), sendResult.getMessage());
+        } catch (Exception e) {
+            Log.e(TAG, "sendSmsAndWait error", e);
+            return new SmsSendResult(false, e.getMessage() != null ? e.getMessage() : "发送异常");
+        } finally {
+            SmsSendReceiver.removeRequest(requestId);
+        }
+    }
+
+    private void sendSms(String phoneNumber, String message, String requestId) {
         try {
             SmsManager smsManager = mContext.getSystemService(SmsManager.class);
             int requestCode = (int) System.currentTimeMillis();
             Intent sentIntent = new Intent(SENT_SMS_ACTION);
             sentIntent.setPackage("com.core.heraservice");
+            if (requestId != null) {
+                sentIntent.putExtra(EXTRA_SMS_REQUEST_ID, requestId);
+            }
             PendingIntent sentPI = PendingIntent.getBroadcast(mContext, requestCode, sentIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
@@ -297,6 +282,17 @@ public class SmsSendManager implements WebSocketManager.OnSmsSendListener {
         } catch (Exception e) {
             e.printStackTrace();
             Log.e(TAG, "发送异常: " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static class SmsSendResult {
+        private final boolean success;
+        private final String message;
+
+        private SmsSendResult(boolean success, String message) {
+            this.success = success;
+            this.message = message;
         }
     }
 
